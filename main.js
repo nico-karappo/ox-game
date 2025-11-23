@@ -33,7 +33,7 @@ const saveNicknameButton = document.getElementById("saveNicknameButton");
 const rankingContent = document.getElementById("rankingContent");
 const startSound = document.getElementById("startSound");
 
-// 状態
+// 状態（共通）
 let currentUser = null;
 let currentRoomId = null;          // PvP 用ルームID
 let playerSymbol = null;           // "X" or "O"（PvP のとき）
@@ -44,23 +44,33 @@ let rankingListenerSet = false;
 let lastRoomStatus = null;         // 対戦開始SE用
 let currentRating = 1500;
 
-// AI インスタンス
-const ai = new TicTacToeAI(currentRating);
-
-// AI 対戦用
-let isAIGame = false;
-let aiBoardStr = ".........";
-let aiCurrentTurn = "X";           // "X" = 人間, "O" = 相手
-let aiGameActive = false;
-let aiThinking = false;
-let aiTimeoutId = null;            // マッチング10秒待ち → AI切り替え
-
-const cells = [];
-
 // ロビーの待機状況
 let hasWaitingOpponent = false;
 let queueListenerSet = false;
 let baseStatusMessage = "ログイン待ち...";
+
+// 盤面UI
+const cells = [];
+
+// PvP のターンタイマー（2秒）
+let pvpTurnTimeoutId = null;
+
+// AI 対戦用
+let isAIGame = false;
+let aiBoardStr = ".........";
+let aiCurrentTurn = "X";           // 現在の手番（"X" or "O"）
+let aiGameActive = false;
+let aiThinking = false;
+
+// vs AI へのフェイルオーバー用（マッチング10秒待ち）
+let aiTimeoutId = null;
+
+// AI プレイヤー情報
+const ai = new TicTacToeAI(currentRating);
+let aiHumanSymbol = "X";           // この対局で人間が使う記号
+let aiAiSymbol = "O";              // この対局でAIが使う記号
+let aiNextHumanSymbol = "X";       // 次の対局で人間が使う記号（X/Oで交互）
+let aiHumanTimeoutId = null;       // 人間の2秒タイマー
 
 // ---------------------------
 // 共通ステータス管理
@@ -98,7 +108,7 @@ function playStartSound() {
     const p = startSound.play();
     if (p && typeof p.catch === "function") {
       p.catch(() => {
-        // ブラウザの自動再生制限で失敗しても無視
+        // 自動再生制限で失敗しても無視
       });
     }
   } catch (e) {
@@ -153,6 +163,100 @@ function resetBoardUI() {
 }
 
 // ---------------------------
+// PvP 用ターンタイマー（2秒）
+// ---------------------------
+function clearPvpTurnTimer() {
+  if (pvpTurnTimeoutId) {
+    clearTimeout(pvpTurnTimeoutId);
+    pvpTurnTimeoutId = null;
+  }
+}
+
+function schedulePvpTurnTimer(room) {
+  clearPvpTurnTimer();
+  if (!room || room.status !== "playing") return;
+  const deadline = room.turnDeadline;
+  if (typeof deadline !== "number") return;
+  const delay = Math.max(0, deadline - Date.now());
+  pvpTurnTimeoutId = setTimeout(() => {
+    attemptSkipTurnForPvp();
+  }, delay + 10);
+}
+
+async function attemptSkipTurnForPvp() {
+  if (!currentRoomId) return;
+  const roomRef = ref(db, "rooms/" + currentRoomId);
+  try {
+    await runTransaction(roomRef, (room) => {
+      if (!room) return room;
+      if (room.status !== "playing") return room;
+
+      const deadline = room.turnDeadline;
+      if (typeof deadline !== "number") return room;
+      if (Date.now() < deadline) return room;
+
+      // 時間切れ：手番を交代（盤面はそのまま）
+      const cur = room.turn;
+      const next = cur === "X" ? "O" : "X";
+      room.turn = next;
+      room.turnDeadline = Date.now() + 2000;
+      return room;
+    });
+  } catch (e) {
+    console.error("PVP timeout skip error:", e);
+  }
+}
+
+// ---------------------------
+// AI 用ターンタイマー（人間 2秒）
+// ---------------------------
+function clearAiHumanTimer() {
+  if (aiHumanTimeoutId) {
+    clearTimeout(aiHumanTimeoutId);
+    aiHumanTimeoutId = null;
+  }
+}
+
+function scheduleAiHumanTimer() {
+  clearAiHumanTimer();
+  if (!isAIGame || !aiGameActive) return;
+  if (aiCurrentTurn !== aiHumanSymbol) return;
+  aiHumanTimeoutId = setTimeout(() => {
+    onAiHumanTimeout();
+  }, 2000);
+}
+
+function onAiHumanTimeout() {
+  aiHumanTimeoutId = null;
+  if (!isAIGame || !aiGameActive) return;
+  if (aiCurrentTurn !== aiHumanSymbol) return;
+
+  // 時間切れ → AIの手番へ
+  aiCurrentTurn = aiAiSymbol;
+  aiThinking = true;
+  setStatus(`対戦中：あなたは ${aiHumanSymbol} です。 相手の手番です。（時間切れ）`);
+
+  setTimeout(() => {
+    const move = ai.chooseMove(aiBoardStr, aiAiSymbol, aiHumanSymbol);
+    if (move !== null && aiBoardStr[move] === ".") {
+      const arr2 = aiBoardStr.split("");
+      arr2[move] = aiAiSymbol;
+      aiBoardStr = arr2.join("");
+      updateBoardUI(aiBoardStr);
+    }
+    const result2 = checkWinnerForBoard(aiBoardStr);
+    if (result2) {
+      finishAiGame(result2);
+    } else {
+      aiCurrentTurn = aiHumanSymbol;
+      aiThinking = false;
+      setStatus(`対戦中：あなたは ${aiHumanSymbol} です。 あなたの手番です。`);
+      scheduleAiHumanTimer();
+    }
+  }, 500);
+}
+
+// ---------------------------
 // Firebase 認証 & ユーザー情報
 // ---------------------------
 async function initUserData(uid) {
@@ -175,7 +279,7 @@ async function initUserData(uid) {
       currentRating = 1500;
       ratingEl.textContent = "-";
     }
-    // AI側にも反映
+    // AI にもレートを反映
     ai.setRating(currentRating);
 
     if (data.currentSymbol === "X" || data.currentSymbol === "O") {
@@ -307,7 +411,8 @@ async function startMatchmaking() {
         winner: null,
         ratingUpdated: false,
         rematchRequests: null,
-        rematchReady: null
+        rematchReady: null,
+        turnDeadline: Date.now() + 2000 // 2秒制限の締切
       };
 
       updates["queue/" + uid] = null;
@@ -383,12 +488,20 @@ function startAIGame() {
   currentRoomData = null;
   playerSymbol = null;
   lastRoomStatus = null;
+  clearPvpTurnTimer();
 
   isAIGame = true;
   aiBoardStr = ".........";
-  aiCurrentTurn = "X";
+
+  // この対局での人間の記号を決定（X/Oが交互になる）
+  aiHumanSymbol = aiNextHumanSymbol;
+  aiAiSymbol = aiHumanSymbol === "X" ? "O" : "X";
+  aiNextHumanSymbol = aiAiSymbol; // 次回は逆側の記号を使う
+
+  aiCurrentTurn = "X";          // 常に X が先手
   aiGameActive = true;
   aiThinking = false;
+  clearAiHumanTimer();
 
   setInGameUI(true);
   resetBoardUI();
@@ -397,17 +510,46 @@ function startAIGame() {
   cancelButton.disabled = true;
 
   playStartSound();
-  setStatus("対戦中：あなたは X です。 あなたの手番です。");
+
+  if (aiCurrentTurn === aiHumanSymbol) {
+    // 人間が先手
+    setStatus(`対戦中：あなたは ${aiHumanSymbol} です。 あなたの手番です。`);
+    scheduleAiHumanTimer();
+  } else {
+    // AIが先手
+    setStatus(`対戦中：あなたは ${aiHumanSymbol} です。 相手の手番です。`);
+    aiThinking = true;
+    setTimeout(() => {
+      const move = ai.chooseMove(aiBoardStr, aiAiSymbol, aiHumanSymbol);
+      if (move !== null && aiBoardStr[move] === ".") {
+        const arr = aiBoardStr.split("");
+        arr[move] = aiAiSymbol;
+        aiBoardStr = arr.join("");
+        updateBoardUI(aiBoardStr);
+      }
+      const result = checkWinnerForBoard(aiBoardStr);
+      if (result) {
+        finishAiGame(result);
+      } else {
+        aiCurrentTurn = aiHumanSymbol;
+        aiThinking = false;
+        setStatus(`対戦中：あなたは ${aiHumanSymbol} です。 あなたの手番です。`);
+        scheduleAiHumanTimer();
+      }
+    }, 500);
+  }
 }
 
 function handleCellClickVsAI(index) {
   if (!isAIGame || !aiGameActive || aiThinking) return;
-  if (aiCurrentTurn !== "X") return;
+  if (aiCurrentTurn !== aiHumanSymbol) return;
   if (aiBoardStr[index] !== ".") return;
+
+  clearAiHumanTimer();
 
   // 人間の手
   let arr = aiBoardStr.split("");
-  arr[index] = "X";
+  arr[index] = aiHumanSymbol;
   aiBoardStr = arr.join("");
   updateBoardUI(aiBoardStr);
 
@@ -417,16 +559,16 @@ function handleCellClickVsAI(index) {
     return;
   }
 
-  // 相手の手番
-  aiCurrentTurn = "O";
+  // AI の手番
+  aiCurrentTurn = aiAiSymbol;
   aiThinking = true;
-  setStatus("対戦中：あなたは X です。 相手の手番です。");
+  setStatus(`対戦中：あなたは ${aiHumanSymbol} です。 相手の手番です。`);
 
   setTimeout(() => {
-    const move = ai.chooseMove(aiBoardStr, "O", "X");
+    const move = ai.chooseMove(aiBoardStr, aiAiSymbol, aiHumanSymbol);
     if (move !== null && aiBoardStr[move] === ".") {
       const arr2 = aiBoardStr.split("");
-      arr2[move] = "O";
+      arr2[move] = aiAiSymbol;
       aiBoardStr = arr2.join("");
       updateBoardUI(aiBoardStr);
     }
@@ -434,9 +576,10 @@ function handleCellClickVsAI(index) {
     if (result2) {
       finishAiGame(result2);
     } else {
-      aiCurrentTurn = "X";
+      aiCurrentTurn = aiHumanSymbol;
       aiThinking = false;
-      setStatus("対戦中：あなたは X です。 あなたの手番です。");
+      setStatus(`対戦中：あなたは ${aiHumanSymbol} です。 あなたの手番です。`);
+      scheduleAiHumanTimer();
     }
   }, 500);
 }
@@ -444,16 +587,17 @@ function handleCellClickVsAI(index) {
 function finishAiGame(result) {
   aiGameActive = false;
   aiThinking = false;
+  clearAiHumanTimer();
 
   let msg = "対戦終了：";
   let score = null;
   if (result === "draw") {
     msg += "引き分けです。";
     score = 0.5;
-  } else if (result === "X") {
+  } else if (result === aiHumanSymbol) {
     msg += "あなたの勝ちです！";
     score = 1;
-  } else if (result === "O") {
+  } else if (result === aiAiSymbol) {
     msg += "あなたの負けです…。";
     score = 0;
   } else {
@@ -549,6 +693,7 @@ async function startRematch(roomId) {
   updates["rooms/" + roomId + "/ratingUpdated"] = false;
   updates["rooms/" + roomId + "/rematchRequests"] = null;
   updates["rooms/" + roomId + "/rematchReady"] = null;
+  updates["rooms/" + roomId + "/turnDeadline"] = Date.now() + 2000;
 
   updates["users/" + prevX + "/currentSymbol"] = "O";
   updates["users/" + prevO + "/currentSymbol"] = "X";
@@ -570,6 +715,7 @@ function joinRoom(roomId) {
   isAIGame = false;
   aiGameActive = false;
   aiThinking = false;
+  clearAiHumanTimer();
   currentRoomId = roomId;
   setSearchingUI(false);
   setInGameUI(true);
@@ -584,6 +730,7 @@ function joinRoom(roomId) {
     currentRoomData = room;
 
     if (!room) {
+      clearPvpTurnTimer();
       setStatus("対戦が終了しました。（ルームが削除されました）");
       currentRoomId = null;
       playerSymbol = null;
@@ -593,6 +740,9 @@ function joinRoom(roomId) {
       lastRoomStatus = null;
       return;
     }
+
+    // ターンタイマー更新
+    schedulePvpTurnTimer(room);
 
     const prevStatus = lastRoomStatus;
     lastRoomStatus = room.status || null;
@@ -670,7 +820,7 @@ function joinRoom(roomId) {
 }
 
 // ---------------------------
-// セルクリック
+// セルクリック（共通入口）
 // ---------------------------
 async function handleCellClick(index) {
   // AI 対戦中
@@ -699,17 +849,21 @@ async function handleCellClick(index) {
       const newBoard = boardArr.join("");
 
       const result = checkWinnerForBoard(newBoard);
+      const now = Date.now();
 
       room.board = newBoard;
 
       if (result === "X" || result === "O") {
         room.status = "finished";
         room.winner = result;
+        room.turnDeadline = null;
       } else if (result === "draw") {
         room.status = "finished";
         room.winner = "draw";
+        room.turnDeadline = null;
       } else {
         room.turn = playerSymbol === "X" ? "O" : "X";
+        room.turnDeadline = now + 2000;
       }
 
       return room;
@@ -805,6 +959,7 @@ async function leaveRoom() {
     aiThinking = false;
     aiBoardStr = ".........";
     aiCurrentTurn = "X";
+    clearAiHumanTimer();
 
     setInGameUI(false);
     setSearchingUI(false);
@@ -830,6 +985,7 @@ async function leaveRoom() {
   playerSymbol = null;
   currentRoomData = null;
   lastRoomStatus = null;
+  clearPvpTurnTimer();
 
   const updates = {};
   updates["users/" + uid + "/currentRoom"] = null;
