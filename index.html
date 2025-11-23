@@ -231,6 +231,9 @@
     </div>
   </div>
 
+  <!-- 対戦開始時のSE -->
+  <audio id="startSound" src="start.mp3" preload="auto" style="display:none"></audio>
+
   <script type="module">
     // Firebase JS SDK を CDN からインポート
     import { initializeApp } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-app.js";
@@ -281,6 +284,7 @@
     const nicknameInput = document.getElementById("nicknameInput");
     const saveNicknameButton = document.getElementById("saveNicknameButton");
     const rankingContent = document.getElementById("rankingContent");
+    const startSound = document.getElementById("startSound");
 
     // ゲーム状態
     let currentUser = null;
@@ -290,6 +294,7 @@
     let roomUnsubscribe = null;
     let currentRoomData = null;
     let rankingListenerSet = false;
+    let lastRoomStatus = null; // 対戦開始SE用
     const cells = [];
 
     // 勝敗判定
@@ -303,6 +308,24 @@
       [0, 4, 8],
       [2, 4, 6]
     ];
+
+    // ---------------------------
+    // サウンド再生
+    // ---------------------------
+    function playStartSound() {
+      if (!startSound) return;
+      try {
+        startSound.currentTime = 0;
+        const p = startSound.play();
+        if (p && typeof p.catch === "function") {
+          p.catch(() => {
+            // ブラウザの自動再生制限で失敗しても無視
+          });
+        }
+      } catch (e) {
+        console.error("playStartSound error:", e);
+      }
+    }
 
     // ---------------------------
     // UIヘルパー
@@ -618,6 +641,7 @@
       setInGameUI(true);
       rematchButton.disabled = true;
       resetBoardUI();
+      lastRoomStatus = null;
 
       const roomRef = ref(db, "rooms/" + roomId);
 
@@ -632,7 +656,15 @@
           setInGameUI(false);
           rematchButton.disabled = true;
           resetBoardUI();
+          lastRoomStatus = null;
           return;
+        }
+
+        // 対戦開始・再戦開始のタイミングでSEを鳴らす
+        const prevStatus = lastRoomStatus;
+        lastRoomStatus = room.status || null;
+        if (room.status === "playing" && prevStatus !== "playing") {
+          playStartSound();
         }
 
         updateBoardUI(room.board || ".........");
@@ -838,6 +870,7 @@
       currentRoomId = null;
       playerSymbol = null;
       currentRoomData = null;
+      lastRoomStatus = null;
 
       const updates = {};
       updates["users/" + uid + "/currentRoom"] = null;
