@@ -46,13 +46,32 @@
 
     #userInfo {
       display: flex;
-      justify-content: space-between;
-      align-items: center;
+      flex-direction: column;
+      gap: 4px;
       font-size: 0.9rem;
       margin-bottom: 12px;
       background: #2a2a2a;
       padding: 8px 10px;
       border-radius: 8px;
+    }
+
+    .user-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      flex-wrap: wrap;
+    }
+
+    #nicknameInput {
+      width: 140px;
+      padding: 4px 6px;
+      border-radius: 6px;
+      border: 1px solid #555;
+      background: #1f1f1f;
+      color: #f5f5f5;
+      font-size: 0.85rem;
     }
 
     #controls {
@@ -97,6 +116,11 @@
       background: #777;
     }
 
+    button.small {
+      padding: 4px 6px;
+      font-size: 0.8rem;
+    }
+
     #status {
       min-height: 2.2em;
       font-size: 0.9rem;
@@ -127,6 +151,27 @@
       background: #2f2f2f;
     }
 
+    #ranking {
+      margin-top: 16px;
+      padding-top: 10px;
+      border-top: 1px solid #444;
+      font-size: 0.8rem;
+    }
+
+    #ranking h2 {
+      margin: 0 0 6px;
+      font-size: 0.95rem;
+    }
+
+    #rankingContent ol {
+      margin: 0;
+      padding-left: 20px;
+    }
+
+    #rankingContent li {
+      margin-bottom: 2px;
+    }
+
     #footer {
       margin-top: 10px;
       font-size: 0.75rem;
@@ -150,8 +195,17 @@
     <div id="connectionStatus">Firebase に接続中...</div>
 
     <div id="userInfo">
-      <div>ユーザーID: <span id="userId">-</span></div>
-      <div>レート: <span id="rating">-</span></div>
+      <div class="user-row">
+        <div>ユーザーID: <span id="userId">-</span></div>
+        <div>レート: <span id="rating">-</span></div>
+      </div>
+      <div class="user-row">
+        <label>
+          ニックネーム:
+          <input id="nicknameInput" type="text" maxlength="16" placeholder="例: nico-karappo">
+        </label>
+        <button id="saveNicknameButton" class="secondary small">保存</button>
+      </div>
     </div>
 
     <div id="controls">
@@ -165,6 +219,11 @@
 
     <div id="board" class="board">
       <!-- JS で 9 マスを生成します -->
+    </div>
+
+    <div id="ranking">
+      <h2>レートランキング（上位20名）</h2>
+      <div id="rankingContent">読み込み中...</div>
     </div>
 
     <div id="footer">
@@ -219,6 +278,9 @@
     const rematchButton = document.getElementById("rematchButton");
     const leaveButton = document.getElementById("leaveButton");
     const boardEl = document.getElementById("board");
+    const nicknameInput = document.getElementById("nicknameInput");
+    const saveNicknameButton = document.getElementById("saveNicknameButton");
+    const rankingContent = document.getElementById("rankingContent");
 
     // ゲーム状態
     let currentUser = null;
@@ -227,6 +289,7 @@
     let isSearching = false;
     let roomUnsubscribe = null;
     let currentRoomData = null;
+    let rankingListenerSet = false;
     const cells = [];
 
     // 勝敗判定
@@ -274,7 +337,6 @@
       for (const cell of cells) {
         cell.disabled = !on;
       }
-      // 対戦中は再戦ボタンは無効
       if (on) {
         rematchButton.disabled = true;
       }
@@ -315,7 +377,8 @@
         await set(userRef, {
           rating: 1500,
           currentRoom: null,
-          currentSymbol: null
+          currentSymbol: null,
+          nickname: null
         });
       }
       onValue(userRef, (snapshot) => {
@@ -328,10 +391,61 @@
         if (data.currentSymbol === "X" || data.currentSymbol === "O") {
           playerSymbol = data.currentSymbol;
         }
+        if (typeof data.nickname === "string") {
+          nicknameInput.value = data.nickname;
+        } else if (!nicknameInput.value) {
+          nicknameInput.value = "";
+        }
         const newRoomId = data.currentRoom || null;
         if (!currentRoomId && newRoomId) {
           joinRoom(newRoomId);
         }
+      });
+    }
+
+    // ランキング購読
+    function subscribeRanking() {
+      if (rankingListenerSet) return;
+      rankingListenerSet = true;
+
+      const usersRef = ref(db, "users");
+      onValue(usersRef, (snapshot) => {
+        const list = [];
+        snapshot.forEach((child) => {
+          const val = child.val() || {};
+          if (typeof val.rating === "number") {
+            list.push({
+              uid: child.key,
+              rating: val.rating,
+              nickname: typeof val.nickname === "string" && val.nickname.trim()
+                ? val.nickname.trim()
+                : ""
+            });
+          }
+        });
+
+        if (list.length === 0) {
+          rankingContent.textContent = "まだ対戦履歴がありません。";
+          return;
+        }
+
+        list.sort((a, b) => b.rating - a.rating);
+        const top = list.slice(0, 20);
+
+        const ol = document.createElement("ol");
+        top.forEach((p) => {
+          const li = document.createElement("li");
+          const name = p.nickname || "(名無し)";
+          const shortUid = p.uid.slice(0, 6);
+          li.textContent = `${name} [${p.rating}] (${shortUid})`;
+          if (currentUser && p.uid === currentUser.uid) {
+            li.style.fontWeight = "bold";
+          }
+          ol.appendChild(li);
+        });
+
+        rankingContent.innerHTML = "";
+        rankingContent.appendChild(ol);
       });
     }
 
@@ -441,7 +555,7 @@
       try {
         const result = await runTransaction(flagRef, (current) => {
           if (current === true) {
-            return; // すでに別クライアントが開始済み
+            return;
           }
           return true;
         });
@@ -552,7 +666,6 @@
             msg += "あなたの負けです…。";
           }
 
-          // 再戦ボタンの状態とメッセージ
           if (currentUser) {
             const myUid = currentUser.uid;
             const players = room.players || {};
@@ -724,6 +837,7 @@
 
       currentRoomId = null;
       playerSymbol = null;
+      currentRoomData = null;
 
       const updates = {};
       updates["users/" + uid + "/currentRoom"] = null;
@@ -736,10 +850,31 @@
       }
 
       setInGameUI(false);
-      setSearchingUI(false);  // ★ ロビーで再び「対戦相手を探す」を押せるようにする
+      setSearchingUI(false);
       rematchButton.disabled = true;
       resetBoardUI();
       setStatus("ロビーに戻りました。");
+    }
+
+    // ---------------------------
+    // ニックネーム保存
+    // ---------------------------
+    async function saveNickname() {
+      if (!currentUser) return;
+      const name = nicknameInput.value.trim();
+      if (name.length > 16) {
+        setStatus("ニックネームは16文字以内にしてください。");
+        return;
+      }
+      try {
+        await update(ref(db, "users/" + currentUser.uid), {
+          nickname: name || null
+        });
+        setStatus("ニックネームを更新しました。");
+      } catch (e) {
+        console.error("Save nickname error:", e);
+        setStatus("ニックネームの更新中にエラーが発生しました。");
+      }
     }
 
     // ---------------------------
@@ -770,6 +905,17 @@
       requestRematch();
     });
 
+    saveNicknameButton.addEventListener("click", () => {
+      saveNickname();
+    });
+
+    nicknameInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        saveNickname();
+      }
+    });
+
     // ---------------------------
     // 認証開始
     // ---------------------------
@@ -794,6 +940,7 @@
           connectionStatusEl.textContent = "ログイン済み";
           setStatus("レーティング情報を取得中…");
           await initUserData(user.uid);
+          subscribeRanking();
           setStatus("「対戦相手を探す」を押すとマッチング開始します。");
         } else {
           currentUser = null;
