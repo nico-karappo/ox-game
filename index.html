@@ -286,7 +286,7 @@
     const rankingContent = document.getElementById("rankingContent");
     const startSound = document.getElementById("startSound");
 
-    // ゲーム状態
+    // 状態
     let currentUser = null;
     let currentRoomId = null;          // PvP 用ルームID
     let playerSymbol = null;           // "X" or "O"（PvP のとき）
@@ -295,19 +295,22 @@
     let currentRoomData = null;
     let rankingListenerSet = false;
     let lastRoomStatus = null;         // 対戦開始SE用
-
-    // レーティング（AIの賢さに使用）
     let currentRating = 1500;
 
-    // AI 対戦用フラグ・状態
+    // AI 対戦用
     let isAIGame = false;
     let aiBoardStr = ".........";
-    let aiCurrentTurn = "X";           // "X" = 人間, "O" = AI
+    let aiCurrentTurn = "X";           // "X" = 人間, "O" = 相手
     let aiGameActive = false;
     let aiThinking = false;
-    let aiTimeoutId = null;            // マッチング10秒待ち → AI切り替え用
+    let aiTimeoutId = null;            // マッチング10秒待ち → AI切り替え
 
     const cells = [];
+
+    // ロビーの待機状況
+    let hasWaitingOpponent = false;
+    let queueListenerSet = false;
+    let baseStatusMessage = "ログイン待ち...";
 
     // 勝敗判定
     const WIN_LINES = [
@@ -320,6 +323,32 @@
       [0, 4, 8],
       [2, 4, 6]
     ];
+
+    // ---------------------------
+    // 共通ステータス管理
+    // ---------------------------
+    function isInGameNow() {
+      if (isAIGame) {
+        return aiGameActive;
+      }
+      if (currentRoomId && lastRoomStatus === "playing") {
+        return true;
+      }
+      return false;
+    }
+
+    function applyStatus() {
+      let msg = baseStatusMessage;
+      if (isInGameNow() && hasWaitingOpponent) {
+        msg += "（ロビーで誰かが対戦待ち中）";
+      }
+      statusEl.textContent = msg;
+    }
+
+    function setStatus(message) {
+      baseStatusMessage = message;
+      applyStatus();
+    }
 
     // ---------------------------
     // サウンド再生
@@ -355,10 +384,6 @@
         boardEl.appendChild(btn);
         cells.push(btn);
       }
-    }
-
-    function setStatus(message) {
-      statusEl.textContent = message;
     }
 
     function setSearchingUI(on) {
@@ -486,6 +511,24 @@
       });
     }
 
+    // ロビー待ち監視
+    function subscribeQueueInfo() {
+      if (queueListenerSet) return;
+      queueListenerSet = true;
+      const queueRef = ref(db, "queue");
+      onValue(queueRef, (snapshot) => {
+        let found = false;
+        snapshot.forEach((child) => {
+          const uidKey = child.key;
+          if (!currentUser || uidKey !== currentUser.uid) {
+            found = true;
+          }
+        });
+        hasWaitingOpponent = found;
+        applyStatus();
+      });
+    }
+
     // ---------------------------
     // マッチング（10秒待ち → AI fallback）
     // ---------------------------
@@ -493,7 +536,6 @@
       if (!currentUser || isSearching || currentRoomId || isAIGame) {
         return;
       }
-      // 既存のAIタイマーがあればクリア
       if (aiTimeoutId) {
         clearTimeout(aiTimeoutId);
         aiTimeoutId = null;
@@ -557,11 +599,10 @@
           await set(ref(db, "queue/" + uid), {
             timestamp: Date.now()
           });
-          setStatus("対戦相手を待っています…（10秒待ってもマッチしなければAIが相手をします）");
+          setStatus("対戦相手を待っています…");
 
           aiTimeoutId = setTimeout(() => {
             aiTimeoutId = null;
-            // まだ対戦開始していなければ AI 対戦へ
             if (!currentRoomId && isSearching && !isAIGame) {
               startAIGameFallback();
             }
@@ -593,7 +634,6 @@
 
     async function startAIGameFallback() {
       if (!currentUser) return;
-      // キューから削除して AI 対戦へ
       try {
         await remove(ref(db, "queue/" + currentUser.uid));
       } catch (e) {
@@ -607,7 +647,6 @@
     // AI 対戦ロジック
     // ---------------------------
     function startAIGame() {
-      // PvP 用の監視は切る
       if (roomUnsubscribe) {
         roomUnsubscribe();
         roomUnsubscribe = null;
@@ -629,11 +668,11 @@
       matchButton.disabled = true;
       cancelButton.disabled = true;
 
-      setStatus("AI対戦を開始します。あなたは X です。あなたの手番です。");
+      playStartSound();
+      setStatus("対戦中：あなたは X です。 あなたの手番です。");
     }
 
     function chooseAiMove(boardStr, aiSymbol, humanSymbol) {
-      // 空きマス一覧
       const empties = [];
       for (let i = 0; i < 9; i++) {
         if (boardStr[i] === ".") empties.push(i);
@@ -652,7 +691,6 @@
         return null;
       }
 
-      // ベストムーブ候補（簡易だけど強め）
       const winMove = findWinningMove(aiSymbol);
       const blockMove = findWinningMove(humanSymbol);
 
@@ -672,18 +710,17 @@
         }
       }
 
-      // レートに応じて「ミス率」を変える
+      // レートに応じてミス率を変える
       let mistakeRate;
       if (currentRating < 1400) {
-        mistakeRate = 0.6;  // 弱い：結構ミスる
+        mistakeRate = 0.6;
       } else if (currentRating < 1700) {
-        mistakeRate = 0.3;  // 中くらい
+        mistakeRate = 0.3;
       } else {
-        mistakeRate = 0.1;  // 強い：たまにしかミスしない
+        mistakeRate = 0.1;
       }
 
       if (Math.random() < mistakeRate) {
-        // ランダムに打つ（ミス）
         return empties[Math.floor(Math.random() * empties.length)];
       } else {
         return bestMove !== null ? bestMove : empties[Math.floor(Math.random() * empties.length)];
@@ -707,10 +744,10 @@
         return;
       }
 
-      // AI の手番
+      // 相手の手番
       aiCurrentTurn = "O";
       aiThinking = true;
-      setStatus("AIの手番です…");
+      setStatus("対戦中：あなたは X です。 相手の手番です。");
 
       setTimeout(() => {
         const move = chooseAiMove(aiBoardStr, "O", "X");
@@ -726,7 +763,7 @@
         } else {
           aiCurrentTurn = "X";
           aiThinking = false;
-          setStatus("あなたの手番です。");
+          setStatus("対戦中：あなたは X です。 あなたの手番です。");
         }
       }, 500);
     }
@@ -735,18 +772,38 @@
       aiGameActive = false;
       aiThinking = false;
 
-      let msg = "AI対戦終了：";
+      let msg = "対戦終了：";
+      let score = null;
       if (result === "draw") {
         msg += "引き分けです。";
+        score = 0.5;
       } else if (result === "X") {
         msg += "あなたの勝ちです！";
+        score = 1;
       } else if (result === "O") {
         msg += "あなたの負けです…。";
+        score = 0;
       } else {
         msg += "ゲーム終了。";
       }
-      msg += " 「再戦希望」でAIともう一度対戦できます。";
 
+      // vs AI でもレート変動
+      if (currentUser && score !== null) {
+        const oldRating = currentRating;
+        const K = 32;
+        const ratingAI = currentRating; // AIのレートを自分と同じとみなす
+        const expected = 1 / (1 + Math.pow(10, (ratingAI - currentRating) / 400));
+        const newRating = Math.round(currentRating + K * (score - expected));
+        currentRating = newRating;
+        ratingEl.textContent = String(newRating);
+        update(ref(db, "users/" + currentUser.uid), {
+          rating: newRating
+        }).catch((e) => {
+          console.error("AI rating update error:", e);
+        });
+      }
+
+      msg += " 「再戦希望」で再戦できます。";
       setStatus(msg);
       rematchButton.disabled = false;
     }
@@ -864,7 +921,6 @@
           return;
         }
 
-        // 対戦開始・再戦開始のタイミングでSEを鳴らす
         const prevStatus = lastRoomStatus;
         lastRoomStatus = room.status || null;
         if (room.status === "playing" && prevStatus !== "playing") {
@@ -950,7 +1006,7 @@
         return;
       }
 
-      // PvP 用
+      // PvP
       if (!currentUser || !currentRoomId || !currentRoomData || !playerSymbol) {
         return;
       }
@@ -991,7 +1047,7 @@
     }
 
     // ---------------------------
-    // レーティング更新
+    // レーティング更新（PvP）
     // ---------------------------
     async function tryUpdateRatingsOnce(roomId) {
       const flagRef = ref(db, "rooms/" + roomId + "/ratingUpdated");
@@ -1204,6 +1260,7 @@
           setStatus("レーティング情報を取得中…");
           await initUserData(user.uid);
           subscribeRanking();
+          subscribeQueueInfo();
           setStatus("「対戦相手を探す」を押すとマッチング開始します。");
         } else {
           currentUser = null;
