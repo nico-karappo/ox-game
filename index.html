@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>オンライン三目並べ（レーティング付き）</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #222;
+      color: #f5f5f5;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      min-height: 100vh;
+    }
+
+    #app {
+      margin-top: 24px;
+      background: #333;
+      padding: 16px 20px 24px;
+      border-radius: 12px;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4);
+      max-width: 420px;
+      width: 100%;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 1.4rem;
+      text-align: center;
+    }
+
+    #connectionStatus {
+      font-size: 0.85rem;
+      text-align: center;
+      margin-bottom: 8px;
+      color: #9fd5ff;
+    }
+
+    #userInfo {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.9rem;
+      margin-bottom: 12px;
+      background: #2a2a2a;
+      padding: 8px 10px;
+      border-radius: 8px;
+    }
+
+    #controls {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    button {
+      flex: 1;
+      padding: 8px;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      font-size: 0.9rem;
+      background: #4a90e2;
+      color: #fff;
+      transition: background 0.15s, transform 0.1s, opacity 0.1s;
+    }
+
+    button:disabled {
+      opacity: 0.4;
+      cursor: default;
+      transform: none;
+    }
+
+    button:hover:not(:disabled) {
+      background: #5ba0f5;
+      transform: translateY(-1px);
+    }
+
+    button.secondary {
+      background: #666;
+    }
+
+    button.secondary:hover:not(:disabled) {
+      background: #777;
+    }
+
+    #status {
+      min-height: 2.2em;
+      font-size: 0.9rem;
+      margin-bottom: 10px;
+    }
+
+    .board {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 4px;
+      background: #111;
+      padding: 4px;
+      border-radius: 10px;
+    }
+
+    .cell {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      font-size: 2.4rem;
+      font-weight: bold;
+      background: #222;
+      color: #f5f5f5;
+      border-radius: 8px;
+      border: 1px solid #555;
+    }
+
+    .cell:hover:not(:disabled) {
+      background: #2f2f2f;
+    }
+
+    #footer {
+      margin-top: 10px;
+      font-size: 0.75rem;
+      color: #aaa;
+      text-align: center;
+    }
+
+    @media (max-width: 480px) {
+      #app {
+        margin-top: 12px;
+        border-radius: 0;
+        max-width: 100%;
+        box-shadow: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <h1>オンライン三目並べ</h1>
+    <div id="connectionStatus">Firebase に接続中...</div>
+
+    <div id="userInfo">
+      <div>ユーザーID: <span id="userId">-</span></div>
+      <div>レート: <span id="rating">-</span></div>
+    </div>
+
+    <div id="controls">
+      <button id="matchButton">対戦相手を探す</button>
+      <button id="cancelButton" class="secondary" disabled>キャンセル</button>
+      <button id="leaveButton" class="secondary" disabled>退出</button>
+    </div>
+
+    <div id="status">ログイン待ち...</div>
+
+    <div id="board" class="board">
+      <!-- JS で 9 マスを生成します -->
+    </div>
+
+    <div id="footer">
+      GitHub Pages + Firebase Realtime Database で動作するサンプルです
+    </div>
+  </div>
+
+  <!-- Firebase Web SDK を CDN から読み込む（公式推奨の書き方）-->
+  <script type="module">
+    // Firebase JS SDK を CDN からインポート
+    // バージョン番号は 12.6.0（執筆時点の例）です。新しいバージョンを使っても構いません。
+    // 参考: 公式ドキュメントの CDN 利用方法
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-app.js";
+    import {
+      getAuth,
+      signInAnonymously,
+      onAuthStateChanged
+    } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-auth.js";
+    import {
+      getDatabase,
+      ref,
+      get,
+      set,
+      update,
+      onValue,
+      remove,
+      runTransaction,
+      push
+    } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-database.js";
+
+    // ===========================
+    // ここをご自身の Firebase 設定に置き換えてください
+    // （Firebase コンソールで Web アプリを作成すると出てくる設定）
+    // ===========================
+    const firebaseConfig = {
+    apiKey: "AIzaSyDLQFUnt9f3thWU_27K1qMc-nEaKRKNucY",
+    authDomain: "ox-game-f496d.firebaseapp.com",
+    databaseURL: "https://ox-game-f496d-default-rtdb.firebaseio.com/",
+    projectId: "ox-game-f496d",
+    storageBucket: "ox-game-f496d.firebasestorage.app",
+    messagingSenderId: "414536351496",
+    appId: "1:414536351496:web:8bb92924feeffc1d03b6bd",
+    measurementId: "G-ET20CFKJBF"
+    };
+
+    // ===========================
+    // 設定ここまで
+    // ===========================
+
+    // Firebase 初期化
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getDatabase(app);
+
+    // DOM 要素
+    const connectionStatusEl = document.getElementById("connectionStatus");
+    const userIdEl = document.getElementById("userId");
+    const ratingEl = document.getElementById("rating");
+    const statusEl = document.getElementById("status");
+    const matchButton = document.getElementById("matchButton");
+    const cancelButton = document.getElementById("cancelButton");
+    const leaveButton = document.getElementById("leaveButton");
+    const boardEl = document.getElementById("board");
+
+    // ゲーム状態
+    let currentUser = null;
+    let currentRoomId = null;
+    let playerSymbol = null; // "X" or "O"
+    let isSearching = false;
+    let roomUnsubscribe = null;
+    let currentRoomData = null;
+    const cells = [];
+
+    // 三目並べ勝敗判定用
+    const WIN_LINES = [
+      [0, 1, 2],
+      [3, 4, 5],
+      [6, 7, 8],
+      [0, 3, 6],
+      [1, 4, 7],
+      [2, 5, 8],
+      [0, 4, 8],
+      [2, 4, 6]
+    ];
+
+    // ---------------------------
+    // UI 初期化（ボード生成）
+    // ---------------------------
+    function initBoardUI() {
+      boardEl.innerHTML = "";
+      cells.length = 0;
+      for (let i = 0; i < 9; i++) {
+        const btn = document.createElement("button");
+        btn.className = "cell";
+        btn.dataset.index = String(i);
+        btn.textContent = "";
+        btn.disabled = true; // 対戦開始まで無効
+        btn.addEventListener("click", () => handleCellClick(i));
+        boardEl.appendChild(btn);
+        cells.push(btn);
+      }
+    }
+
+    function setStatus(message) {
+      statusEl.textContent = message;
+    }
+
+    function setSearchingUI(on) {
+      isSearching = on;
+      matchButton.disabled = on || !!currentRoomId;
+      cancelButton.disabled = !on;
+    }
+
+    function setInGameUI(on) {
+      leaveButton.disabled = !on;
+      for (const cell of cells) {
+        cell.disabled = !on;
+      }
+    }
+
+    function updateBoardUI(boardStr) {
+      const b = boardStr || ".........";
+      for (let i = 0; i < 9; i++) {
+        const ch = b[i] || ".";
+        cells[i].textContent = ch === "." ? "" : ch;
+      }
+    }
+
+    function resetBoardUI() {
+      updateBoardUI(".........");
+    }
+
+    function checkWinnerForBoard(boardStr) {
+      for (const [a, b, c] of WIN_LINES) {
+        const v = boardStr[a];
+        if (v !== "." && v === boardStr[b] && v === boardStr[c]) {
+          return v; // "X" or "O"
+        }
+      }
+      if (!boardStr.includes(".")) {
+        return "draw";
+      }
+      return null;
+    }
+
+    // ---------------------------
+    // Firebase 認証 & ユーザー情報
+    // ---------------------------
+    async function initUserData(uid) {
+      const userRef = ref(db, "users/" + uid);
+      const snap = await get(userRef);
+      if (!snap.exists()) {
+        await set(userRef, {
+          rating: 1500,
+          currentRoom: null,
+          currentSymbol: null
+        });
+      }
+      // レーティング & currentRoom 監視
+      onValue(userRef, (snapshot) => {
+        const data = snapshot.val() || {};
+        if (typeof data.rating === "number") {
+          ratingEl.textContent = String(data.rating);
+        } else {
+          ratingEl.textContent = "-";
+        }
+
+        // 自分のシンボル同期
+        if (data.currentSymbol === "X" || data.currentSymbol === "O") {
+          playerSymbol = data.currentSymbol;
+        }
+
+        // currentRoom がセットされたらルームに参加
+        const newRoomId = data.currentRoom || null;
+        if (!currentRoomId && newRoomId) {
+          joinRoom(newRoomId);
+        }
+      });
+    }
+
+    // ---------------------------
+    // マッチング
+    // ---------------------------
+    async function startMatchmaking() {
+      if (!currentUser || isSearching || currentRoomId) {
+        return;
+      }
+      setSearchingUI(true);
+      setStatus("対戦相手を探しています…");
+
+      const uid = currentUser.uid;
+      const queueRef = ref(db, "queue");
+
+      try {
+        const snapshot = await get(queueRef);
+        let opponentUid = null;
+
+        if (snapshot.exists()) {
+          snapshot.forEach((child) => {
+            const otherUid = child.key;
+            if (!opponentUid && otherUid !== uid) {
+              opponentUid = otherUid;
+            }
+          });
+        }
+
+        if (opponentUid) {
+          // 既に待っている人がいる → 自分がマッチング担当
+          const roomId = push(ref(db, "rooms")).key;
+          const roomPath = "rooms/" + roomId;
+
+          const updates = {};
+          const initialBoard = ".........";
+
+          // 対戦ルーム作成（待っていた人が X、自分が O）
+          updates[roomPath] = {
+            players: {
+              X: opponentUid,
+              O: uid
+            },
+            board: initialBoard,
+            turn: "X",
+            status: "playing",
+            winner: null,
+            ratingUpdated: false
+          };
+
+          // キューから両者を削除
+          updates["queue/" + uid] = null;
+          updates["queue/" + opponentUid] = null;
+
+          // ユーザーにルーム情報をセット
+          updates["users/" + uid + "/currentRoom"] = roomId;
+          updates["users/" + uid + "/currentSymbol"] = "O";
+          updates["users/" + opponentUid + "/currentRoom"] = roomId;
+          updates["users/" + opponentUid + "/currentSymbol"] = "X";
+
+          await update(ref(db), updates);
+
+          setStatus("対戦が開始されました。");
+          setSearchingUI(false);
+          // 自分側の joinRoom は users/currentRoom の変更イベントで起動
+        } else {
+          // まだ誰も待っていない → 自分が待ち行列に入る
+          await set(ref(db, "queue/" + uid), {
+            timestamp: Date.now()
+          });
+          setStatus("対戦相手を待っています…（誰かが入室すると対戦開始）");
+          // この時点ではシンボルは未確定。マッチングした人が設定してくれる。
+        }
+      } catch (e) {
+        console.error("Matching error:", e);
+        setStatus("マッチング中にエラーが発生しました: " + e.message);
+        setSearchingUI(false);
+      }
+    }
+
+    async function cancelMatchmaking() {
+      if (!currentUser || !isSearching || currentRoomId) {
+        return;
+      }
+      setSearchingUI(false);
+      setStatus("マッチングをキャンセルしました。");
+      try {
+        await remove(ref(db, "queue/" + currentUser.uid));
+      } catch (e) {
+        console.error("Cancel matching error:", e);
+      }
+    }
+
+    // ---------------------------
+    // ルーム参加 & 盤面更新監視
+    // ---------------------------
+    function joinRoom(roomId) {
+      if (!roomId) return;
+
+      if (roomUnsubscribe) {
+        roomUnsubscribe();
+        roomUnsubscribe = null;
+      }
+
+      currentRoomId = roomId;
+      setSearchingUI(false);
+      setInGameUI(true);
+      resetBoardUI();
+
+      const roomRef = ref(db, "rooms/" + roomId);
+
+      roomUnsubscribe = onValue(roomRef, async (snapshot) => {
+        const room = snapshot.val();
+        currentRoomData = room;
+
+        if (!room) {
+          // ルームが削除された
+          setStatus("対戦が終了しました。（ルームが削除されました）");
+          currentRoomId = null;
+          playerSymbol = null;
+          setInGameUI(false);
+          resetBoardUI();
+          return;
+        }
+
+        updateBoardUI(room.board || ".........");
+
+        // 念のため、自分の currentSymbol を取り直す
+        if (currentUser && !playerSymbol) {
+          const userSnap = await get(ref(db, "users/" + currentUser.uid));
+          const userData = userSnap.val() || {};
+          if (userData.currentSymbol === "X" || userData.currentSymbol === "O") {
+            playerSymbol = userData.currentSymbol;
+          }
+        }
+
+        if (!playerSymbol) {
+          setStatus("対戦情報を取得中です…");
+          return;
+        }
+
+        if (room.status === "playing") {
+          const myTurn = room.turn === playerSymbol;
+          let msg = `対戦中：あなたは ${playerSymbol} です。`;
+          msg += myTurn ? " あなたの手番です。" : " 相手の手番です。";
+          setStatus(msg);
+        } else if (room.status === "finished") {
+          let msg = "対戦終了：";
+          if (room.winner === "draw") {
+            msg += "引き分けです。";
+          } else if (room.winner === playerSymbol) {
+            msg += "あなたの勝ちです！";
+          } else {
+            msg += "あなたの負けです…。";
+          }
+          setStatus(msg);
+
+          // レーティング更新（どちらか一方のクライアントだけが実行）
+          if (currentRoomId) {
+            tryUpdateRatingsOnce(roomId);
+          }
+        }
+      });
+    }
+
+    // ---------------------------
+    // セルクリック → トランザクションで手を打つ
+    // ---------------------------
+    async function handleCellClick(index) {
+      if (!currentUser || !currentRoomId || !currentRoomData || !playerSymbol) {
+        return;
+      }
+
+      try {
+        const roomRef = ref(db, "rooms/" + currentRoomId);
+        await runTransaction(roomRef, (room) => {
+          if (room === null) return room;
+          if (room.status !== "playing") return room;
+
+          // 手番チェック
+          if (room.turn !== playerSymbol) return room;
+
+          const boardStr = room.board || ".........";
+          if (boardStr[index] !== ".") return room;
+
+          const boardArr = boardStr.split("");
+          boardArr[index] = playerSymbol;
+          const newBoard = boardArr.join("");
+
+          const result = checkWinnerForBoard(newBoard);
+
+          room.board = newBoard;
+
+          if (result === "X" || result === "O") {
+            room.status = "finished";
+            room.winner = result;
+          } else if (result === "draw") {
+            room.status = "finished";
+            room.winner = "draw";
+          } else {
+            room.turn = playerSymbol === "X" ? "O" : "X";
+          }
+
+          return room;
+        });
+      } catch (e) {
+        console.error("Move error:", e);
+      }
+    }
+
+    // ---------------------------
+    // レーティング更新（Elo っぽいシンプル計算）
+    // ---------------------------
+    async function tryUpdateRatingsOnce(roomId) {
+      const flagRef = ref(db, "rooms/" + roomId + "/ratingUpdated");
+      try {
+        const result = await runTransaction(flagRef, (current) => {
+          // すでに true なら何もしない（トランザクション中止）
+          if (current === true) {
+            return;
+          }
+          return true; // 初回だけ true に更新
+        });
+        if (!result.committed) {
+          // 別クライアントが先に更新した
+          return;
+        }
+        await updateRatings(roomId);
+      } catch (e) {
+        console.error("Rating transaction error:", e);
+      }
+    }
+
+    async function updateRatings(roomId) {
+      const roomRef = ref(db, "rooms/" + roomId);
+      const roomSnap = await get(roomRef);
+      if (!roomSnap.exists()) return;
+
+      const room = roomSnap.val();
+      if (room.status !== "finished") return;
+
+      const players = room.players || {};
+      const uidX = players.X;
+      const uidO = players.O;
+      if (!uidX || !uidO) return;
+
+      const winner = room.winner;
+
+      // ユーザーの現在レート取得
+      const [snapX, snapO] = await Promise.all([
+        get(ref(db, "users/" + uidX)),
+        get(ref(db, "users/" + uidO))
+      ]);
+
+      const dataX = snapX.val() || {};
+      const dataO = snapO.val() || {};
+
+      let ratingX = typeof dataX.rating === "number" ? dataX.rating : 1500;
+      let ratingO = typeof dataO.rating === "number" ? dataO.rating : 1500;
+
+      const K = 32;
+      const expectedX = 1 / (1 + Math.pow(10, (ratingO - ratingX) / 400));
+      const expectedO = 1 / (1 + Math.pow(10, (ratingX - ratingO) / 400));
+
+      let scoreX, scoreO;
+      if (winner === "X") {
+        scoreX = 1;
+        scoreO = 0;
+      } else if (winner === "O") {
+        scoreX = 0;
+        scoreO = 1;
+      } else if (winner === "draw") {
+        scoreX = 0.5;
+        scoreO = 0.5;
+      } else {
+        return;
+      }
+
+      const newRatingX = Math.round(ratingX + K * (scoreX - expectedX));
+      const newRatingO = Math.round(ratingO + K * (scoreO - expectedO));
+
+      const updates = {};
+      updates["users/" + uidX + "/rating"] = newRatingX;
+      updates["users/" + uidO + "/rating"] = newRatingO;
+
+      await update(ref(db), updates);
+    }
+
+    // ---------------------------
+    // ルーム退出
+    // ---------------------------
+    async function leaveRoom() {
+      if (!currentUser) return;
+
+      const uid = currentUser.uid;
+
+      if (roomUnsubscribe) {
+        roomUnsubscribe();
+        roomUnsubscribe = null;
+      }
+
+      const updates = {};
+      updates["users/" + uid + "/currentRoom"] = null;
+      updates["users/" + uid + "/currentSymbol"] = null;
+
+      try {
+        await update(ref(db), updates);
+      } catch (e) {
+        console.error("Leave room error:", e);
+      }
+
+      currentRoomId = null;
+      playerSymbol = null;
+      currentRoomData = null;
+      setInGameUI(false);
+      resetBoardUI();
+      setStatus("ロビーに戻りました。");
+    }
+
+    // ---------------------------
+    // ウィンドウ閉じる前の簡易クリーンアップ
+    // ---------------------------
+    window.addEventListener("beforeunload", () => {
+      if (currentUser) {
+        // 待ち行列には残らないようにしておく
+        remove(ref(db, "queue/" + currentUser.uid)).catch(() => {});
+      }
+    });
+
+    // ---------------------------
+    // イベントハンドラ登録
+    // ---------------------------
+    matchButton.addEventListener("click", () => {
+      startMatchmaking();
+    });
+
+    cancelButton.addEventListener("click", () => {
+      cancelMatchmaking();
+    });
+
+    leaveButton.addEventListener("click", () => {
+      leaveRoom();
+    });
+
+    // ---------------------------
+    // 認証開始
+    // ---------------------------
+    async function startAuth() {
+      initBoardUI();
+      connectionStatusEl.textContent = "匿名ログイン中…";
+
+      try {
+        await signInAnonymously(auth);
+      } catch (e) {
+        console.error("signInAnonymously error:", e);
+        connectionStatusEl.textContent = "匿名ログインに失敗しました: " + e.message;
+      }
+
+      onAuthStateChanged(auth, async (user) => {
+        if (user) {
+          currentUser = user;
+          userIdEl.textContent = user.uid;
+          connectionStatusEl.textContent = "ログイン済み";
+          setStatus("レーティング情報を取得中…");
+          await initUserData(user.uid);
+          setStatus("「対戦相手を探す」を押すとマッチング開始します。");
+        } else {
+          currentUser = null;
+          userIdEl.textContent = "-";
+          ratingEl.textContent = "-";
+          connectionStatusEl.textContent = "未ログイン";
+          setStatus("匿名ログインに失敗しました。");
+        }
+      });
+    }
+
+    // アプリ起動
+    startAuth();
+  </script>
+</body>
+</html>
