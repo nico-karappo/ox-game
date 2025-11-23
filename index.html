@@ -59,10 +59,15 @@
       display: flex;
       gap: 8px;
       margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+
+    #controls button {
+      flex: 1;
+      min-width: 120px;
     }
 
     button {
-      flex: 1;
       padding: 8px;
       border-radius: 8px;
       border: none;
@@ -152,6 +157,7 @@
     <div id="controls">
       <button id="matchButton">対戦相手を探す</button>
       <button id="cancelButton" class="secondary" disabled>キャンセル</button>
+      <button id="rematchButton" class="secondary" disabled>再戦希望</button>
       <button id="leaveButton" class="secondary" disabled>退出</button>
     </div>
 
@@ -166,11 +172,8 @@
     </div>
   </div>
 
-  <!-- Firebase Web SDK を CDN から読み込む（公式推奨の書き方）-->
   <script type="module">
     // Firebase JS SDK を CDN からインポート
-    // バージョン番号は 12.6.0（執筆時点の例）です。新しいバージョンを使っても構いません。
-    // 参考: 公式ドキュメントの CDN 利用方法
     import { initializeApp } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-app.js";
     import {
       getAuth,
@@ -189,24 +192,17 @@
       push
     } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-database.js";
 
-    // ===========================
-    // ここをご自身の Firebase 設定に置き換えてください
-    // （Firebase コンソールで Web アプリを作成すると出てくる設定）
-    // ===========================
+    // あなたの Firebase 設定
     const firebaseConfig = {
-    apiKey: "AIzaSyDLQFUnt9f3thWU_27K1qMc-nEaKRKNucY",
-    authDomain: "ox-game-f496d.firebaseapp.com",
-    databaseURL: "https://ox-game-f496d-default-rtdb.firebaseio.com/",
-    projectId: "ox-game-f496d",
-    storageBucket: "ox-game-f496d.firebasestorage.app",
-    messagingSenderId: "414536351496",
-    appId: "1:414536351496:web:8bb92924feeffc1d03b6bd",
-    measurementId: "G-ET20CFKJBF"
+      apiKey: "AIzaSyDLQFUnt9f3thWU_27K1qMc-nEaKRKNucY",
+      authDomain: "ox-game-f496d.firebaseapp.com",
+      databaseURL: "https://ox-game-f496d-default-rtdb.firebaseio.com/",
+      projectId: "ox-game-f496d",
+      storageBucket: "ox-game-f496d.firebasestorage.app",
+      messagingSenderId: "414536351496",
+      appId: "1:414536351496:web:8bb92924feeffc1d03b6bd",
+      measurementId: "G-ET20CFKJBF"
     };
-
-    // ===========================
-    // 設定ここまで
-    // ===========================
 
     // Firebase 初期化
     const app = initializeApp(firebaseConfig);
@@ -220,6 +216,7 @@
     const statusEl = document.getElementById("status");
     const matchButton = document.getElementById("matchButton");
     const cancelButton = document.getElementById("cancelButton");
+    const rematchButton = document.getElementById("rematchButton");
     const leaveButton = document.getElementById("leaveButton");
     const boardEl = document.getElementById("board");
 
@@ -232,7 +229,7 @@
     let currentRoomData = null;
     const cells = [];
 
-    // 三目並べ勝敗判定用
+    // 勝敗判定
     const WIN_LINES = [
       [0, 1, 2],
       [3, 4, 5],
@@ -245,7 +242,7 @@
     ];
 
     // ---------------------------
-    // UI 初期化（ボード生成）
+    // UIヘルパー
     // ---------------------------
     function initBoardUI() {
       boardEl.innerHTML = "";
@@ -255,7 +252,7 @@
         btn.className = "cell";
         btn.dataset.index = String(i);
         btn.textContent = "";
-        btn.disabled = true; // 対戦開始まで無効
+        btn.disabled = true;
         btn.addEventListener("click", () => handleCellClick(i));
         boardEl.appendChild(btn);
         cells.push(btn);
@@ -276,6 +273,10 @@
       leaveButton.disabled = !on;
       for (const cell of cells) {
         cell.disabled = !on;
+      }
+      // 対戦中は再戦ボタンは無効
+      if (on) {
+        rematchButton.disabled = true;
       }
     }
 
@@ -317,7 +318,6 @@
           currentSymbol: null
         });
       }
-      // レーティング & currentRoom 監視
       onValue(userRef, (snapshot) => {
         const data = snapshot.val() || {};
         if (typeof data.rating === "number") {
@@ -325,13 +325,9 @@
         } else {
           ratingEl.textContent = "-";
         }
-
-        // 自分のシンボル同期
         if (data.currentSymbol === "X" || data.currentSymbol === "O") {
           playerSymbol = data.currentSymbol;
         }
-
-        // currentRoom がセットされたらルームに参加
         const newRoomId = data.currentRoom || null;
         if (!currentRoomId && newRoomId) {
           joinRoom(newRoomId);
@@ -366,14 +362,12 @@
         }
 
         if (opponentUid) {
-          // 既に待っている人がいる → 自分がマッチング担当
           const roomId = push(ref(db, "rooms")).key;
           const roomPath = "rooms/" + roomId;
 
           const updates = {};
           const initialBoard = ".........";
 
-          // 対戦ルーム作成（待っていた人が X、自分が O）
           updates[roomPath] = {
             players: {
               X: opponentUid,
@@ -383,14 +377,14 @@
             turn: "X",
             status: "playing",
             winner: null,
-            ratingUpdated: false
+            ratingUpdated: false,
+            rematchRequests: null,
+            rematchReady: null
           };
 
-          // キューから両者を削除
           updates["queue/" + uid] = null;
           updates["queue/" + opponentUid] = null;
 
-          // ユーザーにルーム情報をセット
           updates["users/" + uid + "/currentRoom"] = roomId;
           updates["users/" + uid + "/currentSymbol"] = "O";
           updates["users/" + opponentUid + "/currentRoom"] = roomId;
@@ -400,14 +394,11 @@
 
           setStatus("対戦が開始されました。");
           setSearchingUI(false);
-          // 自分側の joinRoom は users/currentRoom の変更イベントで起動
         } else {
-          // まだ誰も待っていない → 自分が待ち行列に入る
           await set(ref(db, "queue/" + uid), {
             timestamp: Date.now()
           });
           setStatus("対戦相手を待っています…（誰かが入室すると対戦開始）");
-          // この時点ではシンボルは未確定。マッチングした人が設定してくれる。
         }
       } catch (e) {
         console.error("Matching error:", e);
@@ -430,7 +421,75 @@
     }
 
     // ---------------------------
-    // ルーム参加 & 盤面更新監視
+    // 再戦希望
+    // ---------------------------
+    async function requestRematch() {
+      if (!currentUser || !currentRoomId) return;
+      const uid = currentUser.uid;
+      const reqRef = ref(db, "rooms/" + currentRoomId + "/rematchRequests/" + uid);
+      try {
+        await set(reqRef, true);
+        rematchButton.disabled = true;
+        setStatus("再戦希望を送りました。相手の同意を待っています…");
+      } catch (e) {
+        console.error("Rematch request error:", e);
+      }
+    }
+
+    async function tryStartRematchOnce(roomId) {
+      const flagRef = ref(db, "rooms/" + roomId + "/rematchReady");
+      try {
+        const result = await runTransaction(flagRef, (current) => {
+          if (current === true) {
+            return; // すでに別クライアントが開始済み
+          }
+          return true;
+        });
+        if (!result.committed) return;
+        await startRematch(roomId);
+      } catch (e) {
+        console.error("Rematch transaction error:", e);
+      }
+    }
+
+    async function startRematch(roomId) {
+      const roomRef = ref(db, "rooms/" + roomId);
+      const roomSnap = await get(roomRef);
+      if (!roomSnap.exists()) return;
+
+      const room = roomSnap.val();
+      if (room.status !== "finished") return;
+
+      const players = room.players || {};
+      const prevX = players.X;
+      const prevO = players.O;
+      if (!prevX || !prevO) return;
+
+      const newPlayers = {
+        X: prevO,
+        O: prevX
+      };
+
+      const updates = {};
+      const initialBoard = ".........";
+
+      updates["rooms/" + roomId + "/players"] = newPlayers;
+      updates["rooms/" + roomId + "/board"] = initialBoard;
+      updates["rooms/" + roomId + "/turn"] = "X";
+      updates["rooms/" + roomId + "/status"] = "playing";
+      updates["rooms/" + roomId + "/winner"] = null;
+      updates["rooms/" + roomId + "/ratingUpdated"] = false;
+      updates["rooms/" + roomId + "/rematchRequests"] = null;
+      updates["rooms/" + roomId + "/rematchReady"] = null;
+
+      updates["users/" + prevX + "/currentSymbol"] = "O";
+      updates["users/" + prevO + "/currentSymbol"] = "X";
+
+      await update(ref(db), updates);
+    }
+
+    // ---------------------------
+    // ルーム参加 & 監視
     // ---------------------------
     function joinRoom(roomId) {
       if (!roomId) return;
@@ -443,6 +502,7 @@
       currentRoomId = roomId;
       setSearchingUI(false);
       setInGameUI(true);
+      rematchButton.disabled = true;
       resetBoardUI();
 
       const roomRef = ref(db, "rooms/" + roomId);
@@ -452,18 +512,17 @@
         currentRoomData = room;
 
         if (!room) {
-          // ルームが削除された
           setStatus("対戦が終了しました。（ルームが削除されました）");
           currentRoomId = null;
           playerSymbol = null;
           setInGameUI(false);
+          rematchButton.disabled = true;
           resetBoardUI();
           return;
         }
 
         updateBoardUI(room.board || ".........");
 
-        // 念のため、自分の currentSymbol を取り直す
         if (currentUser && !playerSymbol) {
           const userSnap = await get(ref(db, "users/" + currentUser.uid));
           const userData = userSnap.val() || {};
@@ -478,6 +537,7 @@
         }
 
         if (room.status === "playing") {
+          rematchButton.disabled = true;
           const myTurn = room.turn === playerSymbol;
           let msg = `対戦中：あなたは ${playerSymbol} です。`;
           msg += myTurn ? " あなたの手番です。" : " 相手の手番です。";
@@ -491,9 +551,39 @@
           } else {
             msg += "あなたの負けです…。";
           }
+
+          // 再戦ボタンの状態とメッセージ
+          if (currentUser) {
+            const myUid = currentUser.uid;
+            const players = room.players || {};
+            const opponentUid =
+              players.X === myUid ? players.O :
+              players.O === myUid ? players.X : null;
+            const requests = room.rematchRequests || {};
+            const myRequested = !!requests[myUid];
+            const opponentRequested = opponentUid ? !!requests[opponentUid] : false;
+
+            if (!myRequested) {
+              rematchButton.disabled = false;
+              msg += " 「再戦希望」を押すと相手にリクエストを送れます。";
+            } else {
+              rematchButton.disabled = true;
+              if (!opponentRequested) {
+                msg += " 再戦希望を送りました。相手の同意を待っています…";
+              } else {
+                msg += " 双方が再戦希望しました。まもなく再戦が始まります…";
+              }
+            }
+
+            if (myRequested && opponentRequested && currentRoomId) {
+              tryStartRematchOnce(currentRoomId);
+            }
+          } else {
+            rematchButton.disabled = true;
+          }
+
           setStatus(msg);
 
-          // レーティング更新（どちらか一方のクライアントだけが実行）
           if (currentRoomId) {
             tryUpdateRatingsOnce(roomId);
           }
@@ -502,7 +592,7 @@
     }
 
     // ---------------------------
-    // セルクリック → トランザクションで手を打つ
+    // セルクリック
     // ---------------------------
     async function handleCellClick(index) {
       if (!currentUser || !currentRoomId || !currentRoomData || !playerSymbol) {
@@ -514,8 +604,6 @@
         await runTransaction(roomRef, (room) => {
           if (room === null) return room;
           if (room.status !== "playing") return room;
-
-          // 手番チェック
           if (room.turn !== playerSymbol) return room;
 
           const boardStr = room.board || ".........";
@@ -547,20 +635,18 @@
     }
 
     // ---------------------------
-    // レーティング更新（Elo っぽいシンプル計算）
+    // レーティング更新
     // ---------------------------
     async function tryUpdateRatingsOnce(roomId) {
       const flagRef = ref(db, "rooms/" + roomId + "/ratingUpdated");
       try {
         const result = await runTransaction(flagRef, (current) => {
-          // すでに true なら何もしない（トランザクション中止）
           if (current === true) {
             return;
           }
-          return true; // 初回だけ true に更新
+          return true;
         });
         if (!result.committed) {
-          // 別クライアントが先に更新した
           return;
         }
         await updateRatings(roomId);
@@ -584,7 +670,6 @@
 
       const winner = room.winner;
 
-      // ユーザーの現在レート取得
       const [snapX, snapO] = await Promise.all([
         get(ref(db, "users/" + uidX)),
         get(ref(db, "users/" + uidO))
@@ -637,6 +722,9 @@
         roomUnsubscribe = null;
       }
 
+      currentRoomId = null;
+      playerSymbol = null;
+
       const updates = {};
       updates["users/" + uid + "/currentRoom"] = null;
       updates["users/" + uid + "/currentSymbol"] = null;
@@ -647,26 +735,24 @@
         console.error("Leave room error:", e);
       }
 
-      currentRoomId = null;
-      playerSymbol = null;
-      currentRoomData = null;
       setInGameUI(false);
+      setSearchingUI(false);  // ★ ロビーで再び「対戦相手を探す」を押せるようにする
+      rematchButton.disabled = true;
       resetBoardUI();
       setStatus("ロビーに戻りました。");
     }
 
     // ---------------------------
-    // ウィンドウ閉じる前の簡易クリーンアップ
+    // ウィンドウ閉じる前
     // ---------------------------
     window.addEventListener("beforeunload", () => {
       if (currentUser) {
-        // 待ち行列には残らないようにしておく
         remove(ref(db, "queue/" + currentUser.uid)).catch(() => {});
       }
     });
 
     // ---------------------------
-    // イベントハンドラ登録
+    // イベント登録
     // ---------------------------
     matchButton.addEventListener("click", () => {
       startMatchmaking();
@@ -680,11 +766,18 @@
       leaveRoom();
     });
 
+    rematchButton.addEventListener("click", () => {
+      requestRematch();
+    });
+
     // ---------------------------
     // 認証開始
     // ---------------------------
     async function startAuth() {
       initBoardUI();
+      setInGameUI(false);
+      setSearchingUI(false);
+      rematchButton.disabled = true;
       connectionStatusEl.textContent = "匿名ログイン中…";
 
       try {
@@ -712,7 +805,7 @@
       });
     }
 
-    // アプリ起動
+    // 起動
     startAuth();
   </script>
 </body>
